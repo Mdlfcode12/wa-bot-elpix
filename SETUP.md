@@ -155,6 +155,12 @@ base64 -i service-account.json           # macOS
 
 Tempel hasilnya (satu baris panjang) ke `GOOGLE_SERVICE_ACCOUNT_JSON`.
 
+**Simpan file JSON-nya di luar folder proyek.** Hanya string base64 di `.env` yang
+dibaca aplikasi — file aslinya tidak pernah dibuka oleh kode. Gitignore mencegahnya
+ter-commit, tapi tidak mencegahnya ikut tersalin waktu folder proyek dizip atau
+dikirim ke orang lain. Taruh di `~/.secrets/wa-claude-bot/` (Windows:
+`%USERPROFILE%\.secrets\wa-claude-bot\`).
+
 **Siapkan spreadsheet:**
 
 Buat spreadsheet baru, ganti nama tab pertama jadi `Contacts`, isi baris 1 sebagai header:
