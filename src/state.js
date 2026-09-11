@@ -1,4 +1,5 @@
 import { pool } from './authState.js';
+import { config } from './config.js';
 
 /**
  * KENAPA FLAG DISIMPAN DI POSTGRES, BUKAN VARIABEL BIASA:
@@ -119,8 +120,9 @@ export async function getStatus() {
       (SELECT count(*)::int FROM conversations WHERE ai_paused)  AS paused,
       (SELECT count(*)::int FROM conversations WHERE opted_out)  AS opted_out,
       (SELECT count(*)::int FROM outbound_log
-         WHERE status='sent' AND sent_at > date_trunc('day', now())) AS sent_today
-  `);
+         WHERE status='sent'
+           AND sent_at >= date_trunc('day', now() AT TIME ZONE $1) AT TIME ZONE $1) AS sent_today
+  `, [config.outbound.timezone]);
   const { rows: recent } = await pool.query(
     `SELECT action, target, actor, created_at FROM admin_audit
      ORDER BY id DESC LIMIT 10`

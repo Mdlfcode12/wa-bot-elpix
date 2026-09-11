@@ -8,7 +8,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "check": "node src/preflight.js"
+    "check": "node src/preflight.js",
+    "check:tz": "node scripts/check-timezone.mjs",
+    "check:resilience": "node scripts/check-resilience.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.30.0",

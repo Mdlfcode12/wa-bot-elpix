@@ -15,13 +15,55 @@ let sock = null;
 let ready = false;
 let _onMessage = null;
 
+/**
+ * Penjaga reconnect. Tanpa ini, setiap event 'close' menjadwalkan startWhatsApp()
+ * baru tanpa membatalkan yang sudah dijadwalkan — jaringan yang naik-turun
+ * menghasilkan beberapa socket paralel, dan pelanggan menerima balasan ganda
+ * dari satu pesan. Satu percobaan reconnect saja yang boleh hidup.
+ */
+let reconnectTimer = null;
+let connecting = false;
+
+function scheduleReconnect(waitMs) {
+  if (reconnectTimer) return;              // sudah ada yang antre
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    startWhatsApp().catch((e) => {
+      console.error('[WA] reconnect gagal:', e.message);
+      scheduleReconnect(15_000);
+    });
+  }, waitMs);
+}
+
 export const getSock = () => sock;
 export const isReady = () => ready;
 
 export async function startWhatsApp(onMessage) {
   if (onMessage) _onMessage = onMessage; // simpan agar bisa dipakai ulang saat reconnect
-  const { state, saveCreds, clearSession } = await usePostgresAuthState();
-  const { version } = await fetchLatestBaileysVersion();
+  if (connecting) {
+    console.warn('[WA] Koneksi lain sedang dibangun, permintaan ini diabaikan.');
+    return sock;
+  }
+  connecting = true;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  // Socket lama harus dilepas listener-nya, kalau tidak handler-nya menumpuk
+  // dan satu pesan masuk diproses sekali per socket yang pernah dibuat.
+  if (sock) {
+    try { sock.ev.removeAllListeners(); sock.end?.(); } catch { /* sudah mati */ }
+  }
+  // Dua panggilan ini bisa gagal (database atau jaringan). Kalau dibiarkan
+  // melempar, flag connecting tersangkut di true dan bot tidak pernah
+  // mencoba reconnect lagi — mati diam-diam sampai ada yang menyadarinya.
+  let state, saveCreds, clearSession, version;
+  try {
+    ({ state, saveCreds, clearSession } = await usePostgresAuthState());
+    ({ version } = await fetchLatestBaileysVersion());
+  } catch (e) {
+    connecting = false;
+    console.error('[WA] Gagal menyiapkan koneksi:', e.message);
+    scheduleReconnect(15_000);
+    return null;
+  }
 
   sock = makeWASocket({
     version,
@@ -37,6 +79,8 @@ export async function startWhatsApp(onMessage) {
     },
     browser: ['Ubuntu', 'Chrome', '120.0.0'],
   });
+
+  connecting = false;
 
   sock.ev.on('creds.update', saveCreds);
 
@@ -65,13 +109,13 @@ export async function startWhatsApp(onMessage) {
         // Sesi dicabut dari HP, atau akun kena aksi WhatsApp.
         console.error('[WA] Logged out. Sesi dihapus, perlu scan QR baru.');
         await clearSession();
-        return startWhatsApp();
+        return scheduleReconnect(1_000);
       }
 
       // Reconnect dengan backoff supaya tidak spam koneksi.
       const wait = 5_000 + Math.random() * 10_000;
       console.warn(`[WA] Terputus (${code}). Reconnect dalam ${Math.round(wait / 1000)}s`);
-      setTimeout(() => startWhatsApp(), wait);
+      scheduleReconnect(wait);
     }
   });
 

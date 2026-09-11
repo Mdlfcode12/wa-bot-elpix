@@ -49,10 +49,19 @@ function insideWindow() {
   return h >= config.outbound.windowStartHour && h < config.outbound.windowEndHour;
 }
 
+/**
+ * Hitungan harus memakai zona waktu KIRIM (Asia/Jakarta), bukan zona server
+ * database. date_trunc('day', now()) mengikuti setelan server: di Postgres
+ * lokal biasanya kebetulan cocok, tapi Neon dan Supabase berjalan UTC —
+ * di sana penghitung reset jam 07:00 WIB, di tengah jam operasional, dan bot
+ * bisa mengirim dua kali kuota harian. Itu persis pola yang memicu banned.
+ */
 async function sentToday() {
   const { rows } = await pool.query(
     `SELECT count(*)::int AS n FROM outbound_log
-     WHERE status='sent' AND sent_at > date_trunc('day', now())`
+     WHERE status='sent'
+       AND sent_at >= date_trunc('day', now() AT TIME ZONE $1) AT TIME ZONE $1`,
+    [config.outbound.timezone]
   );
   return rows[0].n;
 }
