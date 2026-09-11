@@ -3,13 +3,55 @@ import { askAI } from './gemini.js';
 import { loadHistory, appendTurn, markOptedOut } from './memory.js';
 import { sendHumanLike, getSock } from './client.js';
 import { getFlags, isChatPaused, pauseChat } from './state.js';
-import { logMessage } from './messages.js';
+import { logMessage, saveLidMapping, loadLidMappings } from './messages.js';
 import { pushAlert } from './notify.js';
 import { emit } from './events.js';
 import { config } from './config.js';
 import { recordReplyTime, incrementAgentStat } from './sheets.js';
 
 export const queue = new PerChatQueue({ debounceMs: 4000 });
+
+/**
+ * LID → nomor telepon. Diisi saat WhatsApp menyertakan keduanya dalam satu
+ * pesan, dipakai saat ia hanya mengirim LID. Cukup di memori: kalau proses
+ * restart, pemetaan terbentuk lagi dari pesan berikutnya yang lengkap.
+ */
+const lidToPhone = new Map();
+
+/**
+ * ALAMAT BALASAN per kontak (nomor -> alamat yang dipakai WhatsApp).
+ *
+ * WhatsApp sedang memindahkan pengalamatan dari nomor (@s.whatsapp.net) ke
+ * LID (@lid). Kalau pesan masuk datang lewat LID, balasan yang dikirim ke
+ * alamat nomor bisa gagal didekripsi di HP penerima — tampil sebagai
+ * "Waiting for this message" selamanya, walau server melaporkan terkirim.
+ *
+ * Jadi kita balas ke alamat yang SAMA dengan yang dipakai pesan masuk.
+ * Itu satu-satunya alamat yang pasti punya sesi enkripsi hidup di kedua sisi.
+ */
+const alamatBalasan = new Map();
+
+/** Alamat untuk membalas kontak ini. Default: nomornya sendiri. */
+export function alamatKirim(jid) {
+  return alamatBalasan.get(jid) || jid;
+}
+
+/** Muat pemetaan yang sudah dikenal dari database saat bot start. */
+export async function initLidCache() {
+  for (const r of await loadLidMappings()) {
+    lidToPhone.set(r.lid, r.phone_jid);
+    // Kontak yang pernah memakai LID kemungkinan besar masih memakainya.
+    alamatBalasan.set(r.phone_jid, r.lid);
+  }
+  if (lidToPhone.size) console.log(`[WA-IN] ${lidToPhone.size} pemetaan LID dimuat dari database.`);
+}
+
+/** Simpan pemetaan baru ke memori DAN database. */
+function ingatLid(lid, phoneJid) {
+  if (!lid || !phoneJid || lidToPhone.get(lid) === phoneJid) return;
+  lidToPhone.set(lid, phoneJid);
+  saveLidMapping(lid, phoneJid).catch((e) => console.error('[WA-IN] gagal simpan pemetaan LID:', e.message));
+}
 
 /** Frasa yang menandakan percakapan sebaiknya dipegang manusia. */
 const ESCALATE = [
@@ -28,15 +70,43 @@ function extractText(msg) {
 export async function handleIncoming(msg) {
   if (msg.key.fromMe) return;
 
-  // WhatsApp versi terbaru mengirim pesan ganda (satu @s.whatsapp.net, satu @lid).
-  // Jika kita memproses LID yang tidak punya senderPn, akan muncul kontak duplikat 
-  // (misal 125641080967407) dan bot akan membalas dua kali ke pengguna yang sama.
+  /**
+   * PEMETAAN LID → NOMOR
+   *
+   * WhatsApp versi baru mengirim identitas pengirim dalam dua bentuk: nomor
+   * biasa (@s.whatsapp.net) dan LID (@lid). Atribut sender_pn yang memetakan
+   * keduanya TIDAK selalu disertakan — WhatsApp hanya mengirimnya di sebagian
+   * stanza.
+   *
+   * Versi sebelumnya membuang setiap pesan LID tanpa senderPn, dengan asumsi
+   * selalu ada kembaran ber-nomor yang menyusul. Asumsi itu salah: kalau
+   * kembarannya tidak datang, pesan pelanggan hilang diam-diam — tidak dibalas
+   * dan tidak muncul di panel.
+   *
+   * Karena itu pemetaannya diingat begitu terlihat sekali, lalu dipakai sebagai
+   * cadangan. Pesan hanya dibuang kalau LID-nya benar-benar belum pernah
+   * dikenali, dan itu dicatat sebagai peringatan supaya terlihat.
+   */
   const rawJid = msg.key.remoteJid;
-  if (rawJid?.includes('@lid') && !msg.key.senderPn) {
-    console.log(`[WA-IN] Abaikan pesan duplikat dari LID: ${rawJid}`);
-    return;
+
+  if (msg.key.senderLid && msg.key.senderPn) ingatLid(msg.key.senderLid, msg.key.senderPn);
+  if (rawJid?.endsWith('@lid') && msg.key.senderPn) ingatLid(rawJid, msg.key.senderPn);
+
+  let jid = msg.key.senderPn || rawJid;
+
+  if (jid?.endsWith('@lid')) {
+    const dikenal = lidToPhone.get(jid);
+    if (dikenal) {
+      jid = dikenal; // kembaran ber-nomor sudah pernah terlihat
+    } else {
+      console.warn(`[WA-IN] LID belum dikenal, pesan diabaikan: ${rawJid}. Minta kontak mengirim ulang.`);
+      return;
+    }
   }
-  const jid = msg.key.senderPn || rawJid;
+
+  // Alamat yang dipakai WhatsApp untuk pesan INI adalah alamat yang sehat
+  // untuk membalas. Simpan, lalu pakai di replyAs.
+  if (rawJid && rawJid !== jid) alamatBalasan.set(jid, rawJid);
 
   console.log(`[WA-IN] Pesan dari: ${jid}${rawJid !== jid ? ` (LID: ${rawJid})` : ''}`);
 
@@ -124,6 +194,8 @@ async function processTurn(jid, userText) {
 
 /** Satu jalur kirim untuk AI maupun balasan manusia dari panel. */
 export async function replyAs(jid, sender, text) {
-  await sendHumanLike(jid, text);
+  // Kirim ke alamat yang sehat (bisa @lid), tapi catat di panel dengan nomor
+  // supaya riwayat percakapan tidak terpecah jadi dua kontak.
+  await sendHumanLike(alamatKirim(jid), text);
   await logMessage(jid, 'out', sender, text);
 }

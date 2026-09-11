@@ -11,6 +11,36 @@ import { config } from './config.js';
 import { emit } from './events.js';
 
 const logger = pino({ level: 'fatal' });
+
+/**
+ * CACHE PESAN TERKIRIM — perbaikan "Waiting for this message".
+ *
+ * Kalau HP penerima gagal mendekripsi (sesi Signal basi, pre-key habis,
+ * penerima ganti HP), WhatsApp TIDAK menyerah: HP itu mengirim "retry receipt"
+ * ke kita, artinya "kirim ulang pesan id X, sesi kita rusak".
+ *
+ * Baileys menangani itu otomatis, TAPI ia perlu isi pesan aslinya kembali —
+ * lewat callback getMessage. Bawaannya selalu mengembalikan undefined, jadi
+ * Baileys mencatat 'recv retry request, but message not available' dan pesan
+ * itu tidak pernah dikirim ulang. Di HP penerima tulisannya menggantung
+ * selamanya. assertSessions saja tidak menutup ini: ia mencegah sebagian
+ * kasus di awal, tapi tidak bisa menjawab permintaan kirim ulang.
+ *
+ * 300 pesan terakhir cukup: retry receipt datang dalam hitungan detik sampai
+ * beberapa menit, bukan berjam-jam. Disimpan di memori, bukan database —
+ * kalau proses restart, sesi Signal-nya juga dibangun ulang.
+ */
+const MAX_CACHE = 300;
+const sentMessages = new Map(); // id -> isi pesan
+
+function cacheSent(id, message) {
+  if (!id || !message) return;
+  sentMessages.set(id, message);
+  if (sentMessages.size > MAX_CACHE) {
+    // Map menjaga urutan sisip, jadi kunci pertama adalah yang paling lama.
+    sentMessages.delete(sentMessages.keys().next().value);
+  }
+}
 let sock = null;
 let ready = false;
 let _onMessage = null;
@@ -78,6 +108,12 @@ export async function startWhatsApp(onMessage) {
       keys: makeCacheableSignalKeyStore(state.keys, logger),
     },
     browser: ['Ubuntu', 'Chrome', '120.0.0'],
+
+    /**
+     * Dipanggil Baileys saat penerima minta pesan dikirim ulang.
+     * Tanpa ini, "Waiting for this message" tidak pernah pulih sendiri.
+     */
+    getMessage: async (key) => sentMessages.get(key.id),
   });
 
   connecting = false;
@@ -203,6 +239,8 @@ export async function sendHumanLike(jid, text) {
   console.log(`[WA-SEND] Mengirim ke: ${jid} (${text.length} karakter)`);
   try {
     const sent = await sock.sendMessage(jid, { text });
+    // Simpan supaya bisa dikirim ulang kalau penerima minta retry.
+    cacheSent(sent?.key?.id, sent?.message);
     console.log(`[WA-SEND] ✓ Berhasil kirim ke ${jid}, id: ${sent?.key?.id || '?'}`);
     return sent;
   } catch (err) {

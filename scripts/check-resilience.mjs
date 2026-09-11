@@ -74,4 +74,68 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   console.log('  ✓ reconnect tidak beranak walau koneksi naik-turun');
 }
 
+// --- 6. LID tanpa senderPn tidak boleh dibuang kalau pemetaannya sudah dikenal ---
+{
+  const lidToPhone = new Map();
+  const petakan = (key) => {
+    const raw = key.remoteJid;
+    if (key.senderLid && key.senderPn) lidToPhone.set(key.senderLid, key.senderPn);
+    if (raw?.endsWith('@lid') && key.senderPn) lidToPhone.set(raw, key.senderPn);
+    let jid = key.senderPn || raw;
+    if (jid?.endsWith('@lid')) {
+      const dikenal = lidToPhone.get(jid);
+      if (!dikenal) return null;   // benar-benar belum dikenal
+      jid = dikenal;
+    }
+    return jid;
+  };
+
+  const LID = '125641080967407@lid';
+  const HP = '6285180606949@s.whatsapp.net';
+
+  // Pesan pertama membawa keduanya: pemetaan terbentuk.
+  assert.equal(petakan({ remoteJid: LID, senderPn: HP }), HP);
+
+  // Pesan berikutnya HANYA LID — inilah yang dulu dibuang diam-diam.
+  assert.equal(petakan({ remoteJid: LID }), HP,
+    'LID yang sudah dikenal harus dipetakan ke nomor, bukan dibuang');
+
+  // LID yang belum pernah terlihat tetap ditolak, supaya tidak jadi kontak hantu.
+  assert.equal(petakan({ remoteJid: '999999999999@lid' }), null,
+    'LID asing tetap harus ditolak');
+
+  // Nomor biasa lewat apa adanya.
+  assert.equal(petakan({ remoteJid: HP }), HP);
+
+  console.log('  ✓ pesan LID tidak lagi hilang setelah pemetaan dikenal');
+}
+
+// --- 7. Balasan dikirim ke alamat yang dipakai pesan masuk ---
+{
+  const alamatBalasan = new Map();
+  const HP  = '6285180606949@s.whatsapp.net';
+  const LID = '125641080967407@lid';
+
+  const catat = (jid, rawJid) => { if (rawJid && rawJid !== jid) alamatBalasan.set(jid, rawJid); };
+  const alamatKirim = (jid) => alamatBalasan.get(jid) || jid;
+
+  // Kontak yang belum pernah menulis: balas ke nomornya.
+  assert.equal(alamatKirim(HP), HP, 'tanpa riwayat LID, balas ke nomor');
+
+  // Pesan masuk lewat LID: alamat itu yang punya sesi enkripsi hidup.
+  catat(HP, LID);
+  assert.equal(alamatKirim(HP), LID,
+    'setelah pesan masuk lewat LID, balasan harus ke LID');
+
+  // Kontak lain tidak ikut terpengaruh.
+  const LAIN = '628111111111@s.whatsapp.net';
+  assert.equal(alamatKirim(LAIN), LAIN, 'kontak lain tetap pakai nomornya sendiri');
+
+  // Pesan masuk lewat nomor biasa tidak menimpa apa pun.
+  catat(LAIN, LAIN);
+  assert.equal(alamatKirim(LAIN), LAIN);
+
+  console.log('  ✓ balasan dikirim ke alamat yang dipakai pesan masuk');
+}
+
 console.log('\nSemua pemeriksaan lulus.');

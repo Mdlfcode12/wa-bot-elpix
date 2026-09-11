@@ -23,6 +23,46 @@ export async function initMessages() {
   `);
 }
 
+/**
+ * Pemetaan LID → nomor telepon, disimpan permanen.
+ *
+ * WhatsApp tidak selalu menyertakan sender_pn. Kalau pemetaan hanya ada di
+ * memori, setiap restart membuat bot buta lagi terhadap LID yang sudah pernah
+ * dikenali — dan pesan pertama setelah restart bisa hilang. Tabel ini kecil
+ * (satu baris per kontak) dan menutup lubang itu.
+ */
+export async function initLidMap() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS lid_map (
+      lid        TEXT PRIMARY KEY,
+      phone_jid  TEXT NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+}
+
+export async function saveLidMapping(lid, phoneJid) {
+  await pool.query(
+    `INSERT INTO lid_map (lid, phone_jid) VALUES ($1,$2)
+     ON CONFLICT (lid) DO UPDATE SET phone_jid=$2, updated_at=now()`,
+    [lid, phoneJid]
+  );
+}
+
+/** Arah balik: nomor -> LID. Dipakai untuk memilih alamat kirim. */
+export async function lidForPhone(phoneJid) {
+  const { rows } = await pool.query(
+    `SELECT lid FROM lid_map WHERE phone_jid=$1 ORDER BY updated_at DESC LIMIT 1`,
+    [phoneJid]
+  );
+  return rows[0]?.lid || null;
+}
+
+export async function loadLidMappings() {
+  const { rows } = await pool.query(`SELECT lid, phone_jid FROM lid_map`);
+  return rows;
+}
+
 export async function logMessage(jid, direction, sender, body) {
   const { rows } = await pool.query(
     `INSERT INTO messages (jid, direction, sender, body) VALUES ($1,$2,$3,$4)
