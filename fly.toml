@@ -1,0 +1,33 @@
+# fly.toml — Konfigurasi deploy ke Fly.io
+# Dokumentasi: https://fly.io/docs/reference/configuration/
+
+app = "wa-claude-bot"        # GANTI dengan nama app unik kamu di Fly.io
+primary_region = "sin"       # Singapore — terdekat dari Indonesia
+
+[build]
+  # Dockerfile sudah ada di root, Fly akan otomatis menemukannya.
+
+[env]
+  NODE_ENV = "production"
+  PORT     = "3000"
+  TZ       = "Asia/Jakarta"
+
+# Semua variabel sensitif (API key, database URL, dll.)
+# JANGAN taruh di sini. Set lewat perintah:
+#   flyctl secrets set GEMINI_API_KEY=... DATABASE_URL=... ADMIN_KEY=...
+
+[http_service]
+  internal_port       = 3000
+  force_https         = true       # cookie sesi butuh HTTPS agar flag Secure aktif
+  auto_stop_machines  = false      # WAJIB false — jangan matikan VM, WA butuh koneksi persisten!
+  auto_start_machines = true
+  min_machines_running = 1         # selalu ada minimal 1 VM jalan
+
+  [http_service.concurrency]
+    type       = "connections"
+    hard_limit = 50
+    soft_limit = 30
+
+[[vm]]
+  size   = "shared-cpu-1x"   # masuk free tier Fly.io (3 VM gratis)
+  memory = "512mb"            # Baileys butuh ~200MB, sisanya untuk node + express

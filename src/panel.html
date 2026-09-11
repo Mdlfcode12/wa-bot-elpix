@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2b2e33">
+<title>Kontrol Bot</title>
+<script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+<style>
+  :root {
+    --steel:#2b2e33; --panel:#34383f; --edge:#16181b; --plate:#d6d3cc;
+    --run:#3f8f5f; --halt:#b03a2e; --dim:#8b8f96; --hold:#c8901f;
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; }
+  body {
+    margin:0; background:var(--steel); color:var(--plate);
+    font:16px/1.45 ui-sans-serif,system-ui,-apple-system,sans-serif;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  button { font:inherit; cursor:pointer; border:2px solid var(--edge); }
+  button:focus-visible { outline:3px solid #f0c419; outline-offset:2px; }
+  button[disabled] { opacity:.45; cursor:default; }
+
+  /* Baris status: elemen paling berani, terbaca sekilas dari jauh. */
+  #bar { display:flex; gap:2px; border-bottom:3px solid var(--edge); background:var(--panel); flex:none; }
+  #state { flex:1; padding:12px 16px; transition:background .18s; min-width:0; }
+  #state.run { background:var(--run); } #state.halt { background:var(--halt); }
+  #state b { display:block; font-size:24px; font-weight:800; letter-spacing:-.02em; }
+  #state span { font-size:12.5px; opacity:.85; }
+  #kill { padding:12px 18px; font-weight:700; background:var(--plate); color:var(--edge); border-width:0 0 0 3px; }
+  #kill.halt { background:var(--halt); color:#fff; } #kill.run { background:var(--run); color:#fff; }
+  #camp { padding:12px 18px; font-weight:700; background:#3a6b8a; color:#fff; border-width:0 0 0 3px; font-size:13px; line-height:1.3; }
+  #camp:hover { background:#4a7b9a; } #camp.running { background:var(--hold); color:var(--edge); }
+  #camp-status { font-size:11px; font-weight:400; opacity:.85; display:block; }
+  #rpt { padding:12px 18px; font-weight:700; background:#5a4a8a; color:#fff; border-width:0 0 0 3px; font-size:13px; line-height:1.3; }
+  #rpt:hover { background:#6a5a9a; }
+  #rpt-status { font-size:11px; font-weight:400; opacity:.85; display:block; }
+  #wa-relogin { padding:12px 18px; font-weight:700; background:#7a3a2a; color:#fff; border-width:0 0 0 3px; font-size:13px; line-height:1.3; }
+  #wa-relogin:hover { background:#9a4a3a; }
+  #wa-relogin.scanning { background:var(--hold); color:var(--edge); animation:pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.65} }
+
+  /* Modal QR */
+  #qr-modal { position:fixed; inset:0; background:rgba(0,0,0,.75); display:none;
+              align-items:center; justify-content:center; z-index:30; padding:20px; }
+  #qr-modal.open { display:flex; }
+  #qr-box { background:var(--panel); border:3px solid var(--edge); padding:28px 32px;
+            max-width:380px; width:100%; text-align:center; }
+  #qr-box h2 { margin:0 0 6px; font-size:18px; }
+  #qr-box p { color:var(--dim); font-size:13px; margin:0 0 20px; line-height:1.5; }
+  #qr-canvas { background:#fff; padding:12px; display:inline-block; }
+  #qr-canvas canvas { display:block; }
+  #qr-status { margin-top:14px; font-size:13px; color:var(--dim); min-height:20px; }
+  #qr-close { margin-top:16px; padding:10px 24px; font-weight:700;
+              background:var(--plate); color:var(--edge); border:2px solid var(--edge); cursor:pointer; }
+  #qr-close:hover { background:#bbb; }
+
+  #main { flex:1; display:flex; min-height:0; }
+
+  #list { width:300px; flex:none; border-right:3px solid var(--edge); overflow-y:auto; }
+  .conv { padding:11px 13px; border-bottom:1px solid var(--edge); cursor:pointer; display:flex; gap:9px; }
+  .conv:hover { background:var(--panel); }
+  .conv.sel { background:var(--panel); box-shadow:inset 4px 0 0 var(--plate); }
+  .conv .who { font-weight:600; font-size:14.5px; }
+  .conv .prev { font-size:13px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dot { width:9px; height:9px; border-radius:50%; flex:none; margin-top:6px; background:var(--run); }
+  .dot.hold { background:var(--hold); } .dot.out { background:var(--dim); }
+
+  #thread { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #head { padding:10px 14px; border-bottom:3px solid var(--edge); background:var(--panel);
+          display:flex; align-items:center; gap:10px; flex:none; }
+  #head .t { flex:1; min-width:0; }
+  #head .t b { font-size:15px; } #head .t span { display:block; font-size:12px; color:var(--dim); }
+  #head button { padding:7px 12px; font-size:13px; font-weight:600; background:var(--plate); color:var(--edge); }
+  #back { display:none; }
+  #msgs { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:9px; }
+  .m { max-width:74%; padding:9px 12px; border:1px solid var(--edge); font-size:14.5px;
+       white-space:pre-wrap; word-break:break-word; }
+  .m.in { align-self:flex-start; background:var(--panel); }
+  .m.out { align-self:flex-end; background:#4a5058; }
+  .m.human { background:#4d6b52; }
+  .m .tag { display:block; font-size:10.5px; color:var(--dim); margin-bottom:3px; }
+  .m.human .tag { color:#c3dcc7; }
+  #compose { display:flex; gap:2px; border-top:3px solid var(--edge); flex:none; }
+  #box { flex:1; font:inherit; padding:13px; border:0; background:var(--panel);
+         color:var(--plate); resize:none; height:52px; }
+  #box:focus { outline:2px solid var(--plate); outline-offset:-2px; }
+  #send { padding:0 22px; font-weight:700; background:var(--plate); color:var(--edge); border-width:0 0 0 3px; }
+  .empty { color:var(--dim); font-size:14px; padding:26px 16px; text-align:center; }
+
+  #gate { position:fixed; inset:0; background:var(--steel); display:flex;
+          align-items:center; justify-content:center; padding:22px; z-index:9; }
+  #gate form { width:100%; max-width:330px; }
+  #gate h1 { font-size:20px; margin:0 0 4px; }
+  #gate p { color:var(--dim); font-size:14px; margin:0 0 16px; }
+  #gate input { width:100%; font:inherit; padding:13px; border:3px solid var(--edge);
+                background:var(--plate); color:var(--edge); }
+  #gate button { width:100%; padding:15px; margin-top:8px; font-weight:700;
+                 background:var(--plate); color:var(--edge); }
+  #err { color:#e8907f; font-size:13.5px; min-height:19px; margin-top:8px; }
+
+  #toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%);
+           background:var(--hold); color:var(--edge); font-weight:600; font-size:14px;
+           padding:11px 18px; border:2px solid var(--edge); display:none; z-index:20; max-width:88vw; }
+
+  @media (max-width:720px) {
+    #list { width:100%; }
+    #main.viewing #list { display:none; }
+    #main:not(.viewing) #thread { display:none; }
+    #back { display:block; }
+    .m { max-width:86%; }
+  }
+  @media (prefers-reduced-motion:reduce) { * { transition:none !important; } }
+</style>
+</head>
+<body>
+
+<div id="gate"><form onsubmit="login(event)">
+  <h1>Kontrol bot</h1>
+  <p>Masukkan kunci admin untuk membuka.</p>
+  <input id="key" type="password" autocomplete="current-password" placeholder="ADMIN_KEY">
+  <button type="submit">Buka</button>
+  <div id="err"></div>
+</form></div>
+
+<div id="bar">
+  <div id="state" class="run"><b id="sw">—</b><span id="ss">menghubungi server</span></div>
+  <button id="kill" onclick="toggleAI()">—</button>
+  <button id="camp" onclick="toggleCampaign()">Campaign<span id="camp-status"></span></button>
+  <button id="rpt" onclick="runReport()">Laporan<span id="rpt-status"></span></button>
+  <button id="wa-relogin" onclick="waRelogin()" title="Hapus sesi WA dan scan QR ulang">Re-login WA</button>
+</div>
+
+<div id="main">
+  <div id="list"><p class="empty">Belum ada percakapan.</p></div>
+  <div id="thread">
+    <div id="head">
+      <button id="back" onclick="closeThread()">Kembali</button>
+      <div class="t"><b id="h-name">Pilih percakapan</b><span id="h-sub"></span></div>
+      <button id="hold" onclick="toggleHold()" hidden>—</button>
+    </div>
+    <div id="msgs"><p class="empty">Pilih percakapan untuk melihat isinya.</p></div>
+    <div id="compose" hidden>
+      <textarea id="box" placeholder="Ketik balasan… (Enter kirim)"></textarea>
+      <button id="send" onclick="sendMsg()">Kirim</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<!-- Modal QR Re-login WhatsApp -->
+<div id="qr-modal">
+  <div id="qr-box">
+    <h2>📱 Scan QR WhatsApp</h2>
+    <p>Buka WhatsApp di HP &rarr; <strong>Perangkat Tertaut</strong> &rarr; <strong>Tautkan Perangkat</strong><br>lalu arahkan kamera ke QR di bawah.</p>
+    <div id="qr-canvas"><canvas id="qr-cvs"></canvas></div>
+    <div id="qr-status">Menunggu QR dari server…</div>
+    <button id="qr-close" onclick="closeQrModal()">Tutup</button>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let flags = {}, convs = [], open = null, es = null;
+
+async function api(p, m = 'GET', b) {
+  const r = await fetch(p, { method: m, credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
+  if (r.status === 401) { $('gate').style.display = 'flex'; throw new Error('Sesi habis, masuk lagi'); }
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Gagal');
+  return r.json();
+}
+
+async function login(e) {
+  e.preventDefault();
+  $('err').textContent = '';
+  try {
+    await api('/admin/login', 'POST', { key: $('key').value });
+    $('gate').style.display = 'none';
+    $('key').value = '';
+    boot();
+  } catch (x) { $('err').textContent = x.message; }
+}
+
+function toast(t, ms = 4500) {
+  const el = $('toast');
+  el.textContent = t; el.style.display = 'block';
+  clearTimeout(el._t); el._t = setTimeout(() => (el.style.display = 'none'), ms);
+}
+
+async function boot() { await refresh(); await loadConvs(); connect(); }
+
+// Feed langsung: server yang mendorong perubahan, panel tidak polling.
+function connect() {
+  es?.close();
+  es = new EventSource('/admin/stream');
+  es.onmessage = (e) => {
+    const { type, payload } = JSON.parse(e.data);
+    if (type === 'message') {
+      if (payload.jid === open) appendMsg(payload);
+      loadConvs();
+      if (payload.sender === 'customer' && payload.jid !== open)
+        toast('Pesan baru dari ' + nameOf(payload.jid));
+    }
+    if (type === 'escalation') { toast('⚠ ' + nameOf(payload.jid) + ' butuh kamu', 9000); loadConvs(); }
+    if (type === 'error') toast('Gemini gagal: ' + payload.message, 8000);
+    if (type === 'campaign_progress') {
+      campaignRunning = true;
+      $('camp').className = 'running';
+      $('camp-status').textContent = `${payload.sent}/${payload.cap} — ${payload.name}`;
+    }
+    if (type === 'campaign') {
+      campaignRunning = false;
+      $('camp').className = '';
+      const p = payload;
+      $('camp-status').textContent = '';
+      toast(`Campaign selesai: ${p.sent||0} terkirim, ${p.skipped||0} dilewati, ${p.failed||0} gagal`, 8000);
+      refresh();
+    }
+    if (type === 'report') {
+      $('rpt').disabled = false;
+      if (payload.skipped) {
+        $('rpt-status').textContent = payload.skipped;
+        toast('Laporan dilewati: ' + payload.skipped);
+      } else {
+        $('rpt-status').textContent = `${payload.contacts} kontak`;
+        toast(`Laporan ${payload.date} ditulis ke Sheets (${payload.contacts} kontak)`, 7000);
+      }
+    }
+    if (type === 'report_progress') {
+      $('rpt-status').textContent = `meringkas ${payload.done}/${payload.total}…`;
+    }
+    if (['flags', 'paused', 'resumed', 'optout'].includes(type)) { refresh(); loadConvs(); }
+
+    // --- WhatsApp re-login events ---
+    if (type === 'wa_qr') {
+      $('qr-modal').classList.add('open');
+      $('qr-status').textContent = 'QR aktif — segera scan sebelum kadaluarsa!';
+      $('wa-relogin').classList.add('scanning');
+      // Render QR code ke canvas menggunakan library qrcode.js
+      QRCode.toCanvas($('qr-cvs'), payload.qr, { width: 256, margin: 2 }, (err) => {
+        if (err) $('qr-status').textContent = 'Gagal render QR: ' + err.message;
+      });
+    }
+    if (type === 'wa_connected') {
+      $('qr-modal').classList.remove('open');
+      $('wa-relogin').classList.remove('scanning');
+      toast('✅ WhatsApp tersambung kembali sebagai ' + (payload.id || ''), 7000);
+      refresh();
+    }
+    if (type === 'wa_disconnected') {
+      $('wa-relogin').classList.remove('scanning');
+      refresh();
+    }
+  };
+}
+
+async function refresh() {
+  const s = await api('/admin/status'); flags = s;
+  const on = s.ai_enabled;
+  $('state').className = on ? 'run' : 'halt';
+  $('sw').textContent = on ? 'AI AKTIF' : 'AI BERHENTI';
+  $('ss').textContent = (s.whatsapp ? '' : 'WhatsApp terputus · ') +
+    (on ? `${s.sent_today} pesan pembuka · ${s.paused} dipegang manual · kuota AI sisa ${s.ai_left_today}`
+        : 'pesan masuk menunggu kamu balas di sini');
+  // Kuota harian Gemini habis = bot diam sampai tengah malam waktu Pasifik.
+  if (on && s.ai_left_today === 0) toast('Kuota AI harian habis. Balas manual sampai reset tengah malam waktu Pasifik.', 9000);
+  $('kill').textContent = on ? 'Hentikan' : 'Nyalakan';
+  $('kill').className = on ? 'halt' : 'run';
+}
+
+async function toggleAI() {
+  if (flags.ai_enabled && !confirm('Hentikan semua balasan otomatis sekarang?')) return;
+  $('kill').disabled = true;
+  try {
+    const r = await api('/admin/ai', 'POST', { enabled: !flags.ai_enabled });
+    if (r.dropped) toast(r.dropped + ' balasan tertunda dibatalkan');
+  } catch (x) { toast(x.message); }
+  $('kill').disabled = false;
+  refresh();
+}
+
+let campaignRunning = false;
+async function toggleCampaign() {
+  if (campaignRunning) {
+    if (!confirm('Hentikan campaign yang sedang berjalan?')) return;
+    $('camp').disabled = true;
+    try {
+      await api('/admin/campaign', 'POST', { enabled: false });
+      campaignRunning = false;
+      $('camp').className = '';
+      $('camp-status').textContent = 'dihentikan';
+      toast('Campaign dihentikan');
+    } catch (x) { toast(x.message); }
+    $('camp').disabled = false;
+    return;
+  }
+  if (!confirm('Kirim pesan pembuka ke kontak di Google Sheets?\n\nPastikan data sheet sudah benar dan consent = yes.')) return;
+  $('camp').disabled = true;
+  try {
+    await api('/admin/campaign', 'POST', { enabled: true });
+    const r = await api('/campaign/run', 'POST');
+    if (r.started) {
+      campaignRunning = true;
+      $('camp').className = 'running';
+      $('camp-status').textContent = 'dimulai…';
+      toast('Campaign dimulai — progress akan muncul di sini');
+    }
+  } catch (x) { toast(x.message, 7000); }
+  $('camp').disabled = false;
+}
+
+async function runReport() {
+  if (!confirm('Generate laporan harian dan tulis ke Google Sheets?')) return;
+  $('rpt').disabled = true;
+  $('rpt-status').textContent = 'proses…';
+  try {
+    await api('/admin/report', 'POST');
+    toast('Laporan sedang digenerate…');
+  } catch (x) {
+    toast(x.message, 7000);
+    $('rpt').disabled = false;
+    $('rpt-status').textContent = 'gagal';
+  }
+}
+
+async function waRelogin() {
+  if (!confirm('Hapus sesi WhatsApp sekarang?\n\nQR baru akan muncul di panel ini. Scan dengan HP dalam 60 detik.')) return;
+  $('wa-relogin').disabled = true;
+  // Buka modal dulu dan tampilkan status menunggu
+  $('qr-modal').classList.add('open');
+  const cvs = $('qr-cvs');
+  const ctx = cvs.getContext('2d');
+  cvs.width = 256; cvs.height = 256;
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 256, 256);
+  ctx.fillStyle = '#888'; ctx.font = '14px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('Menghapus sesi…', 128, 128);
+  $('qr-status').textContent = 'Memutus koneksi dan menghapus sesi dari database…';
+  try {
+    await api('/admin/wa-logout', 'POST');
+    $('qr-status').textContent = 'Sesi dihapus. Menunggu QR dari server…';
+  } catch (x) {
+    $('qr-modal').classList.remove('open');
+    toast('Gagal re-login: ' + x.message, 7000);
+  }
+  $('wa-relogin').disabled = false;
+}
+
+function closeQrModal() {
+  $('qr-modal').classList.remove('open');
+}
+
+const nameOf = (jid) => convs.find((c) => c.jid === jid)?.name || jid.split('@')[0];
+
+async function loadConvs() {
+  convs = await api('/admin/conversations');
+  $('list').innerHTML = convs.length
+    ? convs.map((c) => `
+      <div class="conv ${c.jid === open ? 'sel' : ''}" onclick="openThread('${esc(c.jid)}')">
+        <div class="dot ${c.opted_out ? 'out' : c.ai_paused ? 'hold' : ''}"></div>
+        <div style="min-width:0;flex:1">
+          <div class="who">${esc(c.name || c.jid.split('@')[0])}</div>
+          <div class="prev">${c.last_sender === 'customer' ? '' : '↩ '}${esc(c.preview || '')}</div>
+        </div>
+      </div>`).join('')
+    : '<p class="empty">Belum ada percakapan.</p>';
+}
+
+async function openThread(jid) {
+  open = jid;
+  const c = convs.find((x) => x.jid === jid) || {};
+  $('main').classList.add('viewing');
+  $('h-name').textContent = c.name || jid.split('@')[0];
+  $('h-sub').textContent = c.opted_out ? 'minta berhenti dihubungi'
+    : c.ai_paused ? 'kamu yang pegang — AI diam' : 'ditangani AI';
+  $('hold').hidden = false;
+  $('hold').textContent = c.ai_paused ? 'Kembalikan ke AI' : 'Ambil alih';
+  $('compose').hidden = false;
+  $('msgs').innerHTML = '';
+  (await api('/admin/thread?jid=' + encodeURIComponent(jid))).forEach(appendMsg);
+  loadConvs();
+}
+
+function closeThread() { open = null; $('main').classList.remove('viewing'); loadConvs(); }
+
+function appendMsg(m) {
+  const tag = m.sender === 'customer' ? 'Pelanggan' : m.sender === 'human' ? 'Kamu' : 'AI';
+  const t = new Date(m.created_at || m.at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+  const d = document.createElement('div');
+  d.className = 'm ' + m.direction + (m.sender === 'human' ? ' human' : '');
+  d.innerHTML = `<span class="tag">${tag} · ${t}</span>${esc(m.body)}`;
+  $('msgs').append(d);
+  $('msgs').scrollTop = $('msgs').scrollHeight;
+}
+
+async function toggleHold() {
+  const c = convs.find((x) => x.jid === open); if (!c) return;
+  await api(c.ai_paused ? '/admin/resume' : '/admin/pause', 'POST', { jid: open });
+  await loadConvs();
+  openThread(open);
+}
+
+async function sendMsg() {
+  const text = $('box').value.trim();
+  if (!text || !open) return;
+  $('send').disabled = true;
+  try {
+    await api('/admin/send', 'POST', { jid: open, text });
+    $('box').value = '';
+    toast('Terkirim — AI otomatis diam untuk chat ini');
+  } catch (x) { toast(x.message, 7000); }
+  $('send').disabled = false;
+}
+
+$('box').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+});
+
+const esc = (s) => String(s ?? '').replace(/[<>&"']/g, (c) =>
+  ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Kalau cookie sesi masih hidup, gerbang tidak perlu muncul.
+api('/admin/status').then(() => { $('gate').style.display = 'none'; boot(); }).catch(() => {});
+</script>
+</body>
+</html>

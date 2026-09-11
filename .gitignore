@@ -1,0 +1,13 @@
+node_modules/
+.env
+*.log
+service-account.json
+*-service-account.json
+*.serviceaccount.json
+# file JSON service account Google (nama apapun yang mengandung project ID)
+chatbotelpix-*.json
+auth_info_baileys/
+# file temp / sisa debugging
+temp_extracted/
+files.zip
+fix.cjs
