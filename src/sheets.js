@@ -80,27 +80,59 @@ export async function fetchCatalog() {
       range: config.sheets.catalogRange,
     });
 
-    const rows = data.values || [];
+    let rows = data.values || [];
     if (rows.length === 0) return '';
 
+    if (rows[0] && (rows[0][0] || '').toLowerCase().includes('nama')) {
+      rows = rows.slice(1);
+    }
+
     return rows.map(r => {
-      // Baris A-L (0-11)
+      const statusRaw = (r[5] || 'Available').trim();
       return `Nama Properti: ${r[0] || '-'}
-Harga Jual: ${r[1] || '-'}
-Potensi Income: ${r[2] || '-'}
-Spesifikasi: ${r[3] || '-'}
-Fasilitas Kamar: ${r[4] || '-'}
-Fasilitas Umum: ${r[5] || '-'}
-Selling Point: ${r[6] || '-'}
-Lokasi/FAQ: ${r[7] || '-'}
-Alamat: ${r[8] || '-'}
-Maps: ${r[9] || '-'}
-Kontak: ${r[10] || '-'}
-Status: ${r[11] || 'Available'}`;
+Deskripsi & Detail Iklan: ${r[1] || '-'}
+Link Maps: ${r[2] || '-'}
+Komisi: ${r[3] || '-'}
+Kontak Info Lanjut (Foto/Survei): ${r[4] || '-'}
+Status: ${statusRaw}
+Website Detail: ${r[6] || '-'}`;
     }).join('\n\n---\n\n');
   } catch (err) {
     console.error('[sheets] Gagal mengambil katalog:', err.message);
     return '';
+  }
+}
+
+export async function fetchCatalogRaw() {
+  if (!sheetsConfigured()) return [];
+  const api = sheetsApi();
+  try {
+    const { data } = await api.spreadsheets.values.get({
+      spreadsheetId: config.sheets.spreadsheetId,
+      range: config.sheets.catalogRange,
+    });
+
+    let rows = data.values || [];
+    if (rows.length === 0) return [];
+
+    if (rows[0] && (rows[0][0] || '').toLowerCase().includes('nama')) {
+      rows = rows.slice(1);
+    }
+
+    return rows.map(r => {
+      const rawPhotos = r[7] || '';
+      const photos = rawPhotos.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+      return {
+        name: r[0] || '',
+        description: r[1] || '',
+        maps: r[2] || '',
+        status: (r[5] || 'Available').trim(),
+        photos,
+      };
+    });
+  } catch (err) {
+    console.error('[sheets] Gagal mengambil raw katalog:', err.message);
+    return [];
   }
 }
 
@@ -125,8 +157,41 @@ function colNumToLetter(colNum) {
   return letter;
 }
 
+/**
+ * Cache peta ScorringAgent.
+ *
+ * recordReplyTime dan incrementAgentStat dipanggil di jalur panas — sekali
+ * per pesan masuk. Tanpa cache, 10 pelanggan yang chat bersamaan berarti 10
+ * pembacaan penuh tab ScorringAgent, dan kuota baca Sheets (60 permintaan per
+ * menit per pengguna) habis justru saat bot paling sibuk. Begitu kena limit,
+ * pemanggilnya melempar dan statistik agen diam-diam berhenti tercatat.
+ *
+ * Promise-nya yang disimpan, bukan hasilnya: lima pesan yang tiba berbarengan
+ * ikut menunggu SATU pembacaan, bukan memicu lima.
+ */
+const SCORING_TTL_MS = 60_000;
+let scoringCache = null;
+let scoringAt = 0;
+
+/** Dipanggil setelah menulis ke sheet, supaya pembacaan berikutnya segar. */
+function invalidateScoringCache() {
+  scoringCache = null;
+  scoringAt = 0;
+}
+
 export async function getScoringAgentMap() {
   if (!sheetsConfigured()) return null;
+  if (scoringCache && Date.now() - scoringAt < SCORING_TTL_MS) return scoringCache;
+
+  const p = fetchScoringAgentMap();
+  scoringCache = p;
+  scoringAt = Date.now();
+  // Kegagalan tidak boleh dikunci selama satu menit penuh.
+  p.catch(() => invalidateScoringCache());
+  return p;
+}
+
+async function fetchScoringAgentMap() {
   const api = sheetsApi();
   const range = config.sheets.scoringRange || 'ScorringAgent!A:K';
   const tab = range.split('!')[0];
@@ -198,6 +263,9 @@ export async function recordReplyTime(jid, name) {
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: [[timeStr]] },
     });
+    // Baris di cache ikut ditandai. Tanpa ini, pesan berikutnya dalam jendela
+    // cache masih melihat sel kosong dan menulis ulang waktu balas.
+    targetRow[indices.waktuBalas] = timeStr;
     console.log(`[scoring] Waktu balas dicatat untuk ${name || phone} di cell ${cellRange}`);
   }
 }
@@ -236,5 +304,9 @@ export async function incrementAgentStat(jid, name, type) {
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: [[newVal]] },
   });
+  // Nilai baru ditulis balik ke baris cache. Tanpa ini, dua kenaikan dalam
+  // satu jendela cache sama-sama membaca angka lama dan yang kedua menimpa
+  // yang pertama — hitungannya naik satu, bukan dua.
+  targetRow[idx] = String(newVal);
   console.log(`[scoring] Jml_${type} ditambah jadi ${newVal} untuk ${name || phone} di cell ${cellRange}`);
 }

@@ -22,7 +22,7 @@ export class TokenBucket {
   }
 
   async take() {
-    for (;;) {
+    for (; ;) {
       this.#refill();
       if (this.tokens >= 1) {
         this.tokens -= 1;
@@ -85,27 +85,48 @@ export class PerChatQueue {
       this.pending.set(jid, entry);
     }
 
-    entry.texts.push(text);
-    if (entry.timer) clearTimeout(entry.timer);
+    if (text) entry.texts.push(text);
 
-    entry.timer = setTimeout(async () => {
-      if (entry.running) {
-        // Balasan sebelumnya masih diproses — jadwalkan ulang, jangan tumpuk.
-        entry.timer = setTimeout(() => this.push(jid, '', handler), this.debounceMs);
-        return;
-      }
-      const batch = entry.texts.join('\n').trim();
-      entry.texts = [];
-      entry.running = true;
-      try {
-        if (batch) await handler(jid, batch);
-      } catch (e) {
-        console.error(`[queue] ${jid}:`, e.message);
-      } finally {
-        entry.running = false;
-        if (!entry.texts.length) this.pending.delete(jid);
-      }
-    }, this.debounceMs);
+    // Kalau giliran kontak ini sedang jalan, JANGAN pasang timer baru.
+    // Versi sebelumnya memasang rantai timer yang menjadwalkan push('') ulang
+    // tiap debounce sampai handler selesai. Hasil akhirnya sama, tapi setiap
+    // penjadwalan ulang itu membuat entry baru kalau clear() sempat menghapus
+    // entry lama di tengah jalan — di situlah dua balasan untuk satu kontak
+    // bisa jalan bersamaan. Sekarang pesan yang menunggu diambil oleh blok
+    // finally begitu giliran sekarang selesai: sekali, tanpa rantai timer.
+    if (entry.running) return;
+    this.#pasangTimer(jid, entry, handler);
+  }
+
+  #pasangTimer(jid, entry, handler) {
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => this.#proses(jid, entry, handler), this.debounceMs);
+  }
+
+  async #proses(jid, entry, handler) {
+    entry.timer = null;
+    const batch = entry.texts.join('\n').trim();
+    entry.texts = [];
+
+    if (!batch) {
+      if (this.pending.get(jid) === entry) this.pending.delete(jid);
+      return;
+    }
+
+    entry.running = true;
+    try {
+      await handler(jid, batch);
+    } catch (e) {
+      console.error(`[queue] ${jid}:`, e.message);
+    } finally {
+      entry.running = false;
+      // clear() bisa dipanggil selama handler jalan, dan push() sesudahnya
+      // bisa sudah memasang entry BARU di kunci yang sama. Menghapus tanpa
+      // memeriksa akan membuang antrean milik giliran berikutnya.
+      if (this.pending.get(jid) !== entry) return;
+      if (entry.texts.length) this.#pasangTimer(jid, entry, handler);
+      else this.pending.delete(jid);
+    }
   }
 
   /**
@@ -116,9 +137,14 @@ export class PerChatQueue {
   clear(jid) {
     const entry = this.pending.get(jid);
     if (!entry) return 0;
-    if (entry.timer) clearTimeout(entry.timer);
+    if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
     entry.texts = [];
-    this.pending.delete(jid);
+    // Handler yang SUDAH berjalan tidak bisa ditarik kembali. Entry-nya harus
+    // tetap di peta, kalau tidak push() berikutnya tidak melihat giliran yang
+    // sedang jalan, membuat entry baru, dan dua balasan untuk kontak yang sama
+    // dikirim bersamaan — urutannya jadi acak di HP pelanggan.
+    // Blok finally di #proses yang akan membersihkannya.
+    if (!entry.running) this.pending.delete(jid);
     return 1;
   }
 

@@ -11,3 +11,8 @@ auth_info_baileys/
 temp_extracted/
 files.zip
 fix.cjs
+.bot.log
+.bot.log.prev
+.cookie-tmp
+storage/
+

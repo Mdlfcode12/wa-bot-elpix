@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
@@ -6,9 +7,15 @@ import makeWASocket, {
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
-import { usePostgresAuthState } from './authState.js';
+import { usePostgresAuthState, pool } from './authState.js';
 import { config } from './config.js';
 import { emit } from './events.js';
+import { DriveMediaRepository } from './repositories/driveMedia.repository.js';
+import { DriveMediaService } from './services/driveMedia.service.js';
+
+const driveRepository = new DriveMediaRepository(pool);
+const driveService = new DriveMediaService({ repository: driveRepository });
+driveRepository.initSchema().catch((err) => console.error('[DriveCache] Gagal init schema:', err.message));
 
 const logger = pino({ level: 'fatal' });
 
@@ -148,6 +155,18 @@ export async function startWhatsApp(onMessage) {
         return scheduleReconnect(1_000);
       }
 
+      if (code === DisconnectReason.connectionReplaced) {
+        // 440 = stream error 'conflict': sesi WhatsApp Web lain mengambil alih
+        // slot ini. Reconnect otomatis justru merebutnya balik, sesi lawan
+        // merebut lagi, dan keduanya saling tendang tanpa henti — tidak ada
+        // pesan yang terkirim selama itu. Berhenti dan minta manusia memilih
+        // sesi mana yang hidup.
+        console.error('[WA] Koneksi diambil alih sesi lain (440).');
+        console.error('[WA] Tutup WhatsApp Web / bot lain yang memakai nomor ini, lalu start ulang.');
+        emit('wa_conflict', {});
+        return;
+      }
+
       // Reconnect dengan backoff supaya tidak spam koneksi.
       const wait = 5_000 + Math.random() * 10_000;
       console.warn(`[WA] Terputus (${code}). Reconnect dalam ${Math.round(wait / 1000)}s`);
@@ -248,3 +267,97 @@ export async function sendHumanLike(jid, text) {
     throw err;
   }
 }
+
+/** Helper untuk mengunduh biner gambar dari HTTP/HTTPS dengan fallback Google Drive */
+async function fetchImageBuffer(url) {
+  const fileIdMatch = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  const fileId = fileIdMatch ? fileIdMatch[1] : null;
+
+  const candidateUrls = [url];
+  if (fileId) {
+    candidateUrls.push(
+      `https://lh3.googleusercontent.com/d/${fileId}`,
+      `https://drive.google.com/uc?export=download&id=${fileId}`,
+      `https://drive.google.com/thumbnail?id=${fileId}&sz=w1600`
+    );
+  }
+
+  const uniqueUrls = [...new Set(candidateUrls)];
+
+  let lastErr = null;
+  for (const candidate of uniqueUrls) {
+    try {
+      const res = await fetch(candidate, {
+        redirect: 'follow',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+      if (!res.ok) continue;
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('html') && !contentType.includes('image')) {
+        continue;
+      }
+      const arrayBuffer = await res.arrayBuffer();
+      const buf = Buffer.from(arrayBuffer);
+      if (buf.length > 500) {
+        return buf;
+      }
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  throw new Error(lastErr?.message || `Gagal mengunduh biner foto dari ${url}`);
+}
+
+/**
+ * Kirim pesan gambar/foto dengan caption opsional via Baileys.
+ * Otomatis menggunakan DriveMediaService & PostgreSQL cache bila URL berasal dari Google Drive.
+ */
+export async function sendImageHumanLike(jid, imageUrl, caption = '') {
+  await sock.assertSessions([jid]).catch(() => { });
+  await sleep(1000);
+
+  // Cek apakah URL merupakan Google Drive Link dari Spreadsheet
+  const driveMatch = typeof imageUrl === 'string'
+    ? (imageUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || imageUrl.match(/[?&]id=([a-zA-Z0-9_-]+)/) || imageUrl.match(/\/d\/([a-zA-Z0-9_-]+)/))
+    : null;
+
+  if (driveMatch && driveMatch[1]) {
+    const driveFileId = driveMatch[1];
+    console.log(`[WA-SEND-IMG] Link Google Drive terdeteksi dari Katalog (${driveFileId}). Menggunakan DriveMediaService (PostgreSQL Cache)...`);
+    return await driveService.processAndSendMedia({
+      sock,
+      jid,
+      driveFileId,
+      caption,
+    });
+  }
+
+  console.log(`[WA-SEND-IMG] Mengunduh & mengirim foto ke: ${jid} (${imageUrl})`);
+  try {
+    let imageSource;
+    if (typeof imageUrl === 'string' && (imageUrl.startsWith('http://') || imageUrl.startsWith('https://'))) {
+      imageSource = await fetchImageBuffer(imageUrl);
+    } else if (typeof imageUrl === 'string' && fs.existsSync(imageUrl)) {
+      imageSource = fs.readFileSync(imageUrl);
+    } else {
+      imageSource = { url: imageUrl };
+    }
+
+    const messageContent = {
+      image: imageSource,
+      ...(caption ? { caption } : {})
+    };
+    const sent = await sock.sendMessage(jid, messageContent);
+    cacheSent(sent?.key?.id, sent?.message);
+    console.log(`[WA-SEND-IMG] ✓ Berhasil kirim foto asli ke ${jid}`);
+    return sent;
+  } catch (err) {
+    console.error(`[WA-SEND-IMG] ✗ GAGAL kirim foto ke ${jid}:`, err.message || err);
+    throw err;
+  }
+}
+
+

@@ -10,7 +10,7 @@ export const config = {
     // Cek model mana yang gratis untuk project-mu di
     // https://aistudio.google.com/rate-limit lalu sesuaikan tiga nilai di bawah.
     model: process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite',
-    maxTokens: num(process.env.GEMINI_MAX_TOKENS, 400),
+    maxTokens: num(process.env.GEMINI_MAX_TOKENS, 4000),
     concurrency: num(process.env.GEMINI_CONCURRENCY, 2),
     // Gemini 3.1 Flash Lite free tier: RPM limit=15, RPD limit=500.
     // Setel DI BAWAH limit asli project-mu, bukan sama persis.
