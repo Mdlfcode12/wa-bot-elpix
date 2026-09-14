@@ -298,7 +298,7 @@ function convertGDriveUrl(url) {
     incrementAgentStat(jid, name, 'buyer').catch(e => console.error('[scoring] gagal tambah buyer:', e.message));
   }
 
-  // Sembunyikan/bersihkansemua tag internal [KIRIM_FOTO], [FOTO:...], dan link Drive dari teks balasan
+  // Sembunyikan/bersihkan semua tag internal [KIRIM_FOTO], [FOTO:...], dan link Drive dari teks balasan
   cleanReply = cleanReply
     .replace(/\[KIRIM_FOTO\]/gi, '')
     .replace(/\[FOTO:\s*([^\]]+)\]/gi, '')
