@@ -95,6 +95,16 @@ function extractText(msg) {
          m.imageMessage?.caption || m.videoMessage?.caption || null;
 }
 
+/** Konversi link Google Drive file biasa ke direct CDN image URL agar WhatsApp bisa menampilkan gambar */
+function convertGDriveUrl(url) {
+  if (!url) return url;
+  const match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (match && match[1]) {
+    return `https://lh3.googleusercontent.com/d/${match[1]}`;
+  }
+  return url;
+}
+
 export async function handleIncoming(msg) {
   if (msg.key.fromMe) return;
 
@@ -230,15 +240,8 @@ async function processTurn(jid, userText) {
     return;
   }
 
-/** Konversi link Google Drive file biasa ke direct CDN image URL agar WhatsApp bisa menampilkan gambar */
-function convertGDriveUrl(url) {
-  if (!url) return url;
-  const match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-  if (match && match[1]) {
-    return `https://lh3.googleusercontent.com/d/${match[1]}`;
-  }
-  return url;
-}
+  let cleanReply = reply;
+  const photosToSend = [];
 
   // Cek apakah ada permintaan foto secara eksplisit dari pesan user atau tag [KIRIM_FOTO] / [FOTO:] dari AI
   const hasKirimFotoTag = /\[KIRIM_FOTO\]/i.test(reply) || /\[FOTO:/i.test(reply);
