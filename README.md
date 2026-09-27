@@ -291,3 +291,4 @@ Setiap penekanan tombol dicatat di `admin_audit` beserta pelaku dan waktunya.
       memblokir, hentikan — daftar kontaknya yang bermasalah, bukan kodenya
 - [ ] Siapkan jalur eskalasi ke manusia; jangan biarkan AI menangani keluhan serius
 - [ ] Pantau sisa kuota harian di baris status panel selama minggu pertama
+# wa-bot-elpix
